@@ -86,7 +86,7 @@ with st.sidebar:
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_notice_list(board_url):
-    """불도저식 게시판 크롤링: 본문 영역의 모든 링크를 긁어모아 필터링합니다."""
+    """정밀 타격식 게시판 크롤링: 게시판의 '표(Table)' 구조 안에서 '제목'만 추출합니다."""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         session = get_legacy_session()
@@ -96,20 +96,39 @@ def fetch_notice_list(board_url):
         soup = BeautifulSoup(response.text, 'html.parser')
         notices = []
         
-        content_area = soup.select_one('#content, .content, #container, .sub_content, .board_area, .board-list, table')
-        if not content_area:
-            content_area = soup
+        # 1. 서울시교육청 표준 게시판의 '목록 표(Table)' 행(tr)들을 찾습니다.
+        board_rows = soup.select('table.board-list tbody tr, table.bbs_list tbody tr, table.tbl_board tbody tr, .board_list tbody tr')
+        
+        # 만약 표준 클래스가 없다면 일반 table의 tr을 모두 가져옵니다.
+        if not board_rows:
+            board_rows = soup.select('table tbody tr')
             
-        for a_tag in content_area.find_all('a'):
-            title = a_tag.get_text(strip=True)
-            link = a_tag.get('href', '')
+        # 2. 각 행(tr) 안에서 '제목'이 들어있는 칸(td)만 정확히 타겟팅합니다.
+        for row in board_rows:
+            # 보통 제목은 좌측 정렬(left, tal)이거나 title이라는 클래스를 가집니다.
+            title_td = row.select_one('td.title, td.left, td.tal, td.subject')
             
-            if len(title) > 5 and link and not link.startswith(('javascript:', '#', 'tel:', 'mailto:')):
-                full_link = urllib.parse.urljoin(board_url, link)
-                if not any(n['title'] == title for n in notices):
-                    notices.append({"title": title, "url": full_link})
+            # 특정 클래스가 없는 경우 두 번째 칸(보통 1번은 번호, 2번이 제목)을 선택합니다.
+            if not title_td:
+                tds = row.find_all('td')
+                if len(tds) >= 2:
+                    title_td = tds[1]
                     
-        return {"status": "success", "data": notices[:30]}
+            if title_td:
+                a_tag = title_td.find('a')
+                if a_tag:
+                    title = a_tag.get_text(strip=True)
+                    link = a_tag.get('href', '')
+                    
+                    # 3. 쓸모없는 더미 링크 필터링 (자바스크립트 빈 링크 등 제외)
+                    if len(title) > 2 and link and not link.startswith(('javascript:', '#', 'tel:', 'mailto:')):
+                        full_link = urllib.parse.urljoin(board_url, link)
+                        
+                        # 중복 방지
+                        if not any(n['title'] == title for n in notices):
+                            notices.append({"title": title, "url": full_link})
+                            
+        return {"status": "success", "data": notices[:30]} # 최신 30개까지만 반환
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
