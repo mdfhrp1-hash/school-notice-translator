@@ -1,3 +1,5 @@
 streamlit
 google-generativeai
 Pillow
+requests
+beautifulsoup4
