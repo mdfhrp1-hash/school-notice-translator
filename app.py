@@ -86,7 +86,7 @@ with st.sidebar:
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_notice_list(board_url):
-    """정밀 타격식 게시판 크롤링: 게시판의 '표(Table)' 구조 안에서 '제목'만 추출합니다."""
+    """하이브리드 게시판 크롤링: 표, 리스트, 카드형 등 모든 구조의 게시물 제목을 유연하게 찾습니다."""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         session = get_legacy_session()
@@ -96,39 +96,38 @@ def fetch_notice_list(board_url):
         soup = BeautifulSoup(response.text, 'html.parser')
         notices = []
         
-        # 1. 서울시교육청 표준 게시판의 '목록 표(Table)' 행(tr)들을 찾습니다.
-        board_rows = soup.select('table.board-list tbody tr, table.bbs_list tbody tr, table.tbl_board tbody tr, .board_list tbody tr')
+        # 1. 서울시교육청 사이트들이 제목을 숨겨두는 모든 가능한 태그와 클래스를 총동원하여 탐색합니다.
+        # (표의 제목칸, 리스트형 제목칸, 모바일형 제목칸 모두 포함)
+        title_elements = soup.select(
+            'td.title, td.left, td.tal, td.subject, td.txt_l, '  # 일반적인 표 형태
+            'div.tit, p.tit, span.tit, li.tit, '                 # 리스트/웹진 형태
+            '.board_list a, .bbs_list a, .board-list a'          # 컨테이너 안의 직접 링크
+        )
         
-        # 만약 표준 클래스가 없다면 일반 table의 tr을 모두 가져옵니다.
-        if not board_rows:
-            board_rows = soup.select('table tbody tr')
+        # 2. 만약 위에서 못 찾았다면, 게시판 영역 안의 모든 칸(td)을 싹 다 가져옵니다. (최후의 보루)
+        if not title_elements:
+            title_elements = soup.select('.board_area td, .sub_content td, #content td, table td')
             
-        # 2. 각 행(tr) 안에서 '제목'이 들어있는 칸(td)만 정확히 타겟팅합니다.
-        for row in board_rows:
-            # 보통 제목은 좌측 정렬(left, tal)이거나 title이라는 클래스를 가집니다.
-            title_td = row.select_one('td.title, td.left, td.tal, td.subject')
+        # 3. 찾은 요소들 안에서 진짜 '가정통신문 링크'만 똑똑하게 걸러냅니다.
+        for element in title_elements:
+            # 요소 자체가 <a> 태그이거나, 내부에 <a> 태그를 품고 있는 경우 모두 대응
+            a_tag = element if element.name == 'a' else element.find('a')
             
-            # 특정 클래스가 없는 경우 두 번째 칸(보통 1번은 번호, 2번이 제목)을 선택합니다.
-            if not title_td:
-                tds = row.find_all('td')
-                if len(tds) >= 2:
-                    title_td = tds[1]
-                    
-            if title_td:
-                a_tag = title_td.find('a')
-                if a_tag:
-                    title = a_tag.get_text(strip=True)
-                    link = a_tag.get('href', '')
-                    
-                    # 3. 쓸모없는 더미 링크 필터링 (자바스크립트 빈 링크 등 제외)
-                    if len(title) > 2 and link and not link.startswith(('javascript:', '#', 'tel:', 'mailto:')):
+            if a_tag:
+                title = a_tag.get_text(strip=True)
+                link = a_tag.get('href', '')
+                
+                # 제목이 너무 짧은 메뉴 버튼이나 쓸모없는 자바스크립트 더미 링크 필터링
+                if len(title) > 4 and link and not link.startswith(('javascript:void', '#', 'tel:', 'mailto:')):
+                    # '다음', '이전', '목록' 같은 페이징 버튼은 철저히 배제
+                    if title not in ['이전', '다음', '처음', '맨끝', '목록', '검색', '확인', '취소']:
                         full_link = urllib.parse.urljoin(board_url, link)
                         
-                        # 중복 방지
+                        # 중복 방지 로직 (이미 수집한 제목이면 패스)
                         if not any(n['title'] == title for n in notices):
                             notices.append({"title": title, "url": full_link})
                             
-        return {"status": "success", "data": notices[:30]} # 최신 30개까지만 반환
+        return {"status": "success", "data": notices[:30]} # 가장 최신 글 30개만 반환
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
