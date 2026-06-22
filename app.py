@@ -1,197 +1,122 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
-import requests
-from bs4 import BeautifulSoup
-import urllib.parse
-import urllib3
-import ssl
-from requests.adapters import HTTPAdapter
+import io
+import time
 
-# SSL 인증서 경고 무시
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# ==========================================
-# 🚨 핵심 마법: 구형 학교 사이트 보안 장벽 우회 로직
-# ==========================================
-class LegacyHttpAdapter(HTTPAdapter):
-    """최신 OpenSSL 3.0 환경에서 구형 한국 공공기관 인증서에 접속하기 위한 어댑터"""
-    def init_poolmanager(self, connections, maxsize, block=False):
-        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-        ctx.options |= 0x4  # OP_LEGACY_SERVER_CONNECT
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        # 보안 레벨을 0으로 강제 하향 조정하여 구형 서명(WRONG_SIGNATURE_TYPE) 허용
-        ctx.set_ciphers('DEFAULT@SECLEVEL=0')
-        self.poolmanager = urllib3.poolmanager.PoolManager(
-            num_pools=connections,
-            maxsize=maxsize,
-            block=block,
-            ssl_context=ctx
-        )
-
-def get_legacy_session():
-    """보안이 낮아진 특수 세션을 반환하는 함수"""
-    session = requests.session()
-    session.mount('https://', LegacyHttpAdapter())
-    return session
+# --- Selenium 관련 라이브러리 ---
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ==========================================
 # 1. 페이지 설정 및 초기화
 # ==========================================
 st.set_page_config(page_title="등원초 다문화 가정 알리미", page_icon="🏫", layout="wide")
 
-st.title("🏫 등원초등학교 가정통신문 다국어 번역기")
-st.markdown("등원초등학교 게시판에서 최신 가정통신문을 자동으로 불러옵니다.")
+st.title("🏫 등원초등학교 가정통신문 다국어 번역기 (Vision AI)")
+st.markdown("가정통신문 URL을 입력하면 AI가 화면을 직접 캡처(HWP 우회)하여 번역합니다.")
 
 with st.sidebar:
     st.header("⚙️ 환경 설정")
-    # GitHub 보안 경고(Secret scanning)를 피하기 위해 st.secrets 사용
-    # 반드시 Streamlit Cloud 세팅(Secrets)에 GEMINI_API_KEY를 넣어두셔야 합니다!
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
-        st.success("API 키 자동 연동 완료")
-    except Exception:
-        st.error("🚨 Streamlit Secrets에 API 키가 설정되지 않았습니다.")
+        st.success("API 키 연동 완료")
+    except:
+        st.error("🚨 Streamlit Secrets에 API 키가 없습니다.")
         st.stop()
         
     target_lang = st.selectbox("번역할 언어를 선택하세요", ["English", "Tiếng Việt (베트남어)", "中文 (중국어)", "日本語 (일본어)", "Русский (러시아어)"])
-    st.markdown("---")
-    st.info("💡 **데이터 캐싱 활성화됨**\n\n한 번 번역된 문서는 서버에 저장되어 대기 시간 없이 즉시 로딩됩니다.")
 
 # ==========================================
-# 2. 핵심 AI 및 크롤링 기능 (캐싱 적용)
+# 2. 핵심 AI 및 Selenium 크롤링 기능
 # ==========================================
 
-@st.cache_data(show_spinner=False)
-def fetch_notice_list(board_url):
-    """특수 세션을 이용한 게시판 목록 크롤링"""
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
-        # requests.get 대신 우리가 만든 특수 접속기(get_legacy_session) 사용
-        session = get_legacy_session()
-        response = session.get(board_url, headers=headers, timeout=10)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        notices = []
-        
-        for a_tag in soup.select('td a, .title a, .subject a, .board-list a'):
-            title = a_tag.text.strip()
-            link = a_tag.get('href', '')
-            if title and link and 'javascript' not in link.lower() and '#' not in link:
-                full_link = urllib.parse.urljoin(board_url, link)
-                if not any(n['title'] == title for n in notices):
-                    notices.append({"title": title, "url": full_link})
-                    
-        return {"status": "success", "data": notices}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+@st.cache_resource(show_spinner=False)
+def get_driver():
+    """Streamlit Cloud용 Headless 크롬 드라이버 세팅"""
+    options = Options()
+    options.add_argument('--headless') # 화면 없이 백그라운드 실행
+    options.add_argument('--no-sandbox') # 보안 샌드박스 비활성화 (리눅스 필수)
+    options.add_argument('--disable-dev-shm-usage') # 메모리 부족 에러 방지
+    options.add_argument('--window-size=1920,1080') # 스크린샷을 위한 넉넉한 창 크기
+    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+    
+    # webdriver-manager를 이용해 자동 설치 및 실행
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    return driver
 
 @st.cache_data(show_spinner=False)
-def crawl_deungwon_notice(url):
-    """특수 세션을 이용한 본문 크롤링"""
+def capture_and_translate(url, target_lang, _api_key):
+    """Selenium으로 요소를 스크린샷 찍고 Gemini Vision으로 바로 번역"""
+    driver = None
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        session = get_legacy_session()
-        response = session.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
+        driver = get_driver()
+        driver.get(url)
         
-        soup = BeautifulSoup(response.text, 'html.parser')
-        content_area = soup.select_one('.board-text, .bbsc, .contents, #board_area, .view_content, td.content') 
+        # 동적 로딩을 위해 2초 대기 (사이트 사정에 따라 조절)
+        time.sleep(2) 
         
-        if content_area:
-            return content_area.get_text(separator='\n', strip=True)
-        else:
-            return soup.get_text(separator='\n', strip=True)
-    except Exception as e:
-        return f"❌ 크롤링 에러: {e}"
-
-@st.cache_data(show_spinner=False)
-def translate_text_with_gemini(text, target_lang, api_key):
-    try:
-        genai.configure(api_key=api_key)
+        # 📌 본문 영역 또는 HWP 미리보기 영역 찾기 (기존에 쓰시던 클래스명으로 변경하세요)
+        # 예시: 서울시교육청 표준 본문 영역
+        wait = WebDriverWait(driver, 10)
+        content_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".board-text, .bbsc, .view_content, #board_area")))
+        
+        # 📸 핵심: 요소만 깔끔하게 스크린샷 캡처 (바이트 형태로 메모리에 저장)
+        screenshot_bytes = content_element.screenshot_as_png
+        
+        # 바이트 데이터를 PIL 이미지 객체로 변환
+        image = Image.open(io.BytesIO(screenshot_bytes))
+        
+        # --- Gemini Vision API 호출 ---
+        genai.configure(api_key=_api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
+        
         prompt = f"""
-당신은 한국 '등원초등학교'의 가정통신문을 다문화 가정 학부모님들께 전달하는 전문 번역가입니다.
-아래 제공된 [한국어 원문]을 {target_lang}로 번역해 주세요.
+당신은 한국 학교의 가정통신문 전문 번역가입니다.
+첨부된 이미지는 가정통신문의 본문(또는 첨부파일)을 캡처한 것입니다. 
+이미지 안의 모든 텍스트를 판독한 후, 반드시 {target_lang}로 번역해 주세요.
 
 [번역 규칙]
-1. 원본의 마크다운 형식(표, 글머리 기호, 줄바꿈 등)을 훼손하지 말 것.
-2. 부연 설명 없이 오직 '번역된 결과물'만 출력할 것.
-
-[한국어 원문]
-{text}
+1. 원본의 구조(표, 제목 등)를 마크다운 형식으로 유지할 것.
+2. 부연 설명 없이 '번역된 결과물'만 출력할 것.
 """
-        return model.generate_content(prompt).text
-    except Exception as e:
-        return f"❌ 번역 에러: {e}"
+        response = model.generate_content([prompt, image])
+        
+        return {"status": "success", "image": image, "translated_text": response.text}
 
-@st.cache_data(show_spinner=False)
-def extract_text_from_image(image_bytes, api_key):
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        image = Image.open(image_bytes)
-        prompt = "이 이미지에 있는 텍스트를 마크다운 형식으로 추출해줘."
-        return model.generate_content([prompt, image]).text
     except Exception as e:
-        return f"❌ 이미지 판독 에러: {e}"
+        return {"status": "error", "message": str(e)}
 
 # ==========================================
 # 3. 메인 UI
 # ==========================================
 
-tab1, tab2, tab3 = st.tabs(["🔗 등원초 게시판 자동 연동", "📝 텍스트 직접 입력", "🖼️ 첨부 이미지 업로드"])
+st.markdown("### 🔗 특정 가정통신문 URL 캡처 및 번역")
+notice_url = st.text_input("가정통신문 게시글 주소(URL)를 입력하세요:")
 
-with tab1:
-    st.markdown("### 🌐 최신 가정통신문 불러오기")
-    board_url = "https://deungwon.sen.es.kr/192617/subMenu.do"
-    
-    with st.spinner("등원초 게시판 목록을 긁어오는 중입니다 (보안 우회 중)..."):
-        result = fetch_notice_list(board_url)
-    
-    if result["status"] == "success" and result["data"]:
-        notices = result["data"]
-        notice_titles = [f"{idx+1}. {notice['title']}" for idx, notice in enumerate(notices)]
-        selected_title = st.selectbox("번역할 가정통신문을 선택하세요:", notice_titles)
-        
-        selected_index = notice_titles.index(selected_title)
-        target_url = notices[selected_index]['url']
-        
-        if st.button("해당 가정통신문 긁어오기 및 번역", key="btn_crawl"):
-            with st.spinner("게시글 본문을 가져오는 중입니다..."):
-                crawled_text = crawl_deungwon_notice(target_url)
+if st.button("화면 캡처 및 번역 시작", key="btn_capture"):
+    if notice_url:
+        with st.spinner("가상 브라우저를 띄워 스크린샷을 촬영하고 번역하는 중입니다... (약 10~15초 소요)"):
+            result = capture_and_translate(notice_url, target_lang, api_key)
             
-            if "에러" in crawled_text:
-                st.error(crawled_text)
+            if result["status"] == "error":
+                st.error("🚨 스크린샷 캡처 또는 번역 중 오류가 발생했습니다.")
+                st.error(result["message"])
             else:
-                st.success("본문 수집 완료! 번역을 시작합니다.")
-                with st.spinner(f"가져온 내용을 {target_lang}로 번역 중입니다..."):
-                    translated_from_url = translate_text_with_gemini(crawled_text, target_lang, api_key)
+                st.success("캡처 및 번역 완료!")
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.markdown("### 📄 가져온 원문")
-                    st.text_area("원본 텍스트", crawled_text, height=400, disabled=True) 
+                    st.markdown("### 📸 AI가 캡처한 화면 (원본)")
+                    st.image(result["image"], caption="가상 브라우저 스크린샷 결과", use_column_width=True)
                 with col2:
                     st.markdown(f"### 🌐 {target_lang} 번역본")
-                    st.success(translated_from_url)
-                    
-    elif result["status"] == "success" and not result["data"]:
-        st.warning("접속은 성공했으나, 게시글 목록을 찾지 못했습니다. 학교 사이트 게시판 형태가 일반적이지 않습니다.")
+                    st.success(result["translated_text"])
     else:
-        st.error("🚨 학교 사이트 접속에 실패했습니다.")
-        st.error(f"상세 에러 내용: {result['message']}")
-
-with tab2:
-    source_text = st.text_area("번역할 내용을 붙여넣으세요", height=200)
-    if st.button("텍스트 번역", key="btn_text"):
-        st.info(translate_text_with_gemini(source_text, target_lang, api_key))
-
-with tab3:
-    uploaded_file = st.file_uploader("이미지 파일 (JPG, PNG)", type=['jpg', 'jpeg', 'png'])
-    if uploaded_file and st.button("이미지 번역", key="btn_img"):
-        extracted = extract_text_from_image(uploaded_file, api_key)
-        st.success(translate_text_with_gemini(extracted, target_lang, api_key))
+        st.warning("URL을 입력해 주세요.")
