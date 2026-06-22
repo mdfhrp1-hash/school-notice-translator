@@ -114,4 +114,58 @@ def extract_text_from_image(image_bytes, api_key):
 
 if not api_key:
     st.warning("👈 사이드바에 Gemini API Key를 먼저 입력해 주세요.")
-    st.
+    st.stop()
+
+tab1, tab2, tab3 = st.tabs(["🔗 등원초 게시판 자동 연동", "📝 텍스트 직접 입력", "🖼️ 첨부 이미지 업로드"])
+
+with tab1:
+    st.markdown("### 🌐 최신 가정통신문 불러오기")
+    board_url = "https://deungwon.sen.es.kr/192617/subMenu.do"
+    
+    with st.spinner("등원초 게시판 목록을 긁어오는 중입니다..."):
+        result = fetch_notice_list(board_url)
+    
+    if result["status"] == "success" and result["data"]:
+        notices = result["data"]
+        notice_titles = [f"{idx+1}. {notice['title']}" for idx, notice in enumerate(notices)]
+        selected_title = st.selectbox("번역할 가정통신문을 선택하세요:", notice_titles)
+        
+        selected_index = notice_titles.index(selected_title)
+        target_url = notices[selected_index]['url']
+        
+        if st.button("해당 가정통신문 긁어오기 및 번역", key="btn_crawl"):
+            with st.spinner("게시글 본문을 가져오는 중입니다..."):
+                crawled_text = crawl_deungwon_notice(target_url)
+            
+            if "에러" in crawled_text:
+                st.error(crawled_text)
+            else:
+                st.success("본문 수집 완료! 번역을 시작합니다.")
+                with st.spinner(f"가져온 내용을 {target_lang}로 번역 중입니다..."):
+                    translated_from_url = translate_text_with_gemini(crawled_text, target_lang, api_key)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("### 📄 가져온 원문")
+                    st.text_area("원본 텍스트", crawled_text, height=400, disabled=True) 
+                with col2:
+                    st.markdown(f"### 🌐 {target_lang} 번역본")
+                    st.success(translated_from_url)
+                    
+    elif result["status"] == "success" and not result["data"]:
+        st.warning("접속은 성공했으나, 게시글 목록을 찾지 못했습니다. 학교 사이트 게시판 형태가 일반적이지 않습니다.")
+    else:
+        st.error("🚨 학교 사이트 접속에 실패했습니다.")
+        st.error(f"상세 에러 내용: {result['message']}")
+        st.info("💡 스트림릿 클라우드의 접속 IP가 학교 방화벽에 의해 차단되었을 확률이 높습니다. 이 경우 크롤링 탭 대신 텍스트/이미지 업로드 탭을 사용해 주세요.")
+
+with tab2:
+    source_text = st.text_area("번역할 내용을 붙여넣으세요", height=200)
+    if st.button("텍스트 번역", key="btn_text"):
+        st.info(translate_text_with_gemini(source_text, target_lang, api_key))
+
+with tab3:
+    uploaded_file = st.file_uploader("이미지 파일 (JPG, PNG)", type=['jpg', 'jpeg', 'png'])
+    if uploaded_file and st.button("이미지 번역", key="btn_img"):
+        extracted = extract_text_from_image(uploaded_file, api_key)
+        st.success(translate_text_with_gemini(extracted, target_lang, api_key))
