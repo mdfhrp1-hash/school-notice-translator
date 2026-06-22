@@ -19,7 +19,7 @@ st.markdown("등원초등학교 게시판에서 최신 가정통신문을 자동
 
 with st.sidebar:
     st.header("⚙️ 환경 설정")
-    api_key = st.text_input("Gemini API Key를 입력하세요", type="password")
+    api_key = st.secrets["GEMINI_API_KEY"]
     target_lang = st.selectbox("번역할 언어를 선택하세요", ["English", "Tiếng Việt (베트남어)", "中文 (중국어)", "日本語 (일본어)", "Русский (러시아어)"])
     st.markdown("---")
     st.info("💡 **데이터 캐싱 활성화됨**\n\n한 번 번역된 문서는 서버에 저장되어 대기 시간 없이 즉시 로딩됩니다.")
