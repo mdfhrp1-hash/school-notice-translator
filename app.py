@@ -5,9 +5,34 @@ import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 import urllib3
+import ssl
+from requests.adapters import HTTPAdapter
 
-# SSL 인증서 경고 무시 (한국 학교 사이트 크롤링 필수 설정)
+# SSL 인증서 경고 무시
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ==========================================
+# 🚨 핵심 마법: 구형 학교 사이트 보안 장벽 우회 로직
+# ==========================================
+def get_legacy_session():
+    """최신 OpenSSL 3.0 환경에서 구형 한국 공공기관 인증서에 접속하기 위한 특수 세션"""
+    ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    # 보안 레벨을 0으로 강제 하향 조정하여 구형 서명(WRONG_SIGNATURE_TYPE) 허용
+    ctx.set_ciphers('DEFAULT@SECLEVEL=0')
+    
+    session = requests.session()
+    adapter = HTTPAdapter()
+    adapter.init_poolmanager = lambda connections, maxsize, block=False: urllib3.PoolManager(
+        num_pools=connections,
+        maxsize=maxsize,
+        block=block,
+        ssl_context=ctx
+    )
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    return session
 
 # ==========================================
 # 1. 페이지 설정 및 초기화
@@ -19,7 +44,9 @@ st.markdown("등원초등학교 게시판에서 최신 가정통신문을 자동
 
 with st.sidebar:
     st.header("⚙️ 환경 설정")
+    # 원활한 시연을 위해 API 키 직접 입력 방식으로 고정해 두었습니다.
     api_key = st.secrets["GEMINI_API_KEY"]
+    st.success("API 키 자동 연동 완료")
     target_lang = st.selectbox("번역할 언어를 선택하세요", ["English", "Tiếng Việt (베트남어)", "中文 (중국어)", "日本語 (일본어)", "Русский (러시아어)"])
     st.markdown("---")
     st.info("💡 **데이터 캐싱 활성화됨**\n\n한 번 번역된 문서는 서버에 저장되어 대기 시간 없이 즉시 로딩됩니다.")
@@ -30,26 +57,21 @@ with st.sidebar:
 
 @st.cache_data(show_spinner=False)
 def fetch_notice_list(board_url):
-    """등원초등학교 게시판 목록 크롤링 (강화된 우회 로직)"""
+    """특수 세션을 이용한 게시판 목록 크롤링"""
     try:
-        # 실제 크롬 브라우저처럼 완벽하게 위장
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
-        }
-        # verify=False를 통해 공공기관 보안 인증서 충돌 무시
-        response = requests.get(board_url, headers=headers, verify=False, timeout=10)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
+        # requests.get 대신 우리가 만든 특수 세션(get_legacy_session) 사용
+        session = get_legacy_session()
+        response = session.get(board_url, headers=headers, timeout=10)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
         notices = []
         
-        # 방식 1: 테이블 내의 모든 링크 검색
         for a_tag in soup.select('td a, .title a, .subject a, .board-list a'):
             title = a_tag.text.strip()
             link = a_tag.get('href', '')
-            # 자바스크립트 빈 링크 제외하고 유효한 링크만 수집
             if title and link and 'javascript' not in link.lower() and '#' not in link:
                 full_link = urllib.parse.urljoin(board_url, link)
                 if not any(n['title'] == title for n in notices):
@@ -61,10 +83,11 @@ def fetch_notice_list(board_url):
 
 @st.cache_data(show_spinner=False)
 def crawl_deungwon_notice(url):
-    """본문 크롤링 (강화된 우회 로직)"""
+    """특수 세션을 이용한 본문 크롤링"""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
-        response = requests.get(url, headers=headers, verify=False, timeout=10)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        session = get_legacy_session()
+        response = session.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -112,17 +135,13 @@ def extract_text_from_image(image_bytes, api_key):
 # 3. 메인 UI
 # ==========================================
 
-if not api_key:
-    st.warning("👈 사이드바에 Gemini API Key를 먼저 입력해 주세요.")
-    st.stop()
-
 tab1, tab2, tab3 = st.tabs(["🔗 등원초 게시판 자동 연동", "📝 텍스트 직접 입력", "🖼️ 첨부 이미지 업로드"])
 
 with tab1:
     st.markdown("### 🌐 최신 가정통신문 불러오기")
     board_url = "https://deungwon.sen.es.kr/192617/subMenu.do"
     
-    with st.spinner("등원초 게시판 목록을 긁어오는 중입니다..."):
+    with st.spinner("등원초 게시판 목록을 긁어오는 중입니다 (보안 우회 중)..."):
         result = fetch_notice_list(board_url)
     
     if result["status"] == "success" and result["data"]:
@@ -157,7 +176,6 @@ with tab1:
     else:
         st.error("🚨 학교 사이트 접속에 실패했습니다.")
         st.error(f"상세 에러 내용: {result['message']}")
-        st.info("💡 스트림릿 클라우드의 접속 IP가 학교 방화벽에 의해 차단되었을 확률이 높습니다. 이 경우 크롤링 탭 대신 텍스트/이미지 업로드 탭을 사용해 주세요.")
 
 with tab2:
     source_text = st.text_area("번역할 내용을 붙여넣으세요", height=200)
