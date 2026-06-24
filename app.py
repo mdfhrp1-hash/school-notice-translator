@@ -57,33 +57,42 @@ with st.sidebar:
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_notice_list(board_url):
-    """브라우저를 띄워 자바스크립트 렌더링을 기다린 후 목록을 추출합니다."""
+    """사용자님 오리지널 방식: 엉뚱한 iframe 전환을 삭제하고 정직하게 표(Table)를 찾습니다."""
     driver = None
     try:
         driver = get_driver()
         driver.get(board_url)
-        time.sleep(3) 
         
-        # 교육청 사이트 특성: iframe 안으로 진입
-        iframes = driver.find_elements(By.TAG_NAME, 'iframe')
-        if len(iframes) > 0:
-            driver.switch_to.frame(iframes[0])
-            
+        # 📌 명시적 대기: 무작정 3초 기다리지 않고, 화면에 'table'이 나타날 때까지 최대 10초 대기
+        wait = WebDriverWait(driver, 10)
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+        time.sleep(1) # 표가 로딩된 후 안의 글씨가 채워질 때까지 1초만 더 여유 대기
+        
+        # 눈에 보이는 완성된 페이지 소스를 가져와서 분석
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         notices = []
         
-        for a_tag in soup.select('table tbody tr td a, .board-list a, .bbs_list a'):
-            title = a_tag.get_text(strip=True)
-            link = a_tag.get('href', '')
-            
-            if len(title) > 3 and link and not link.startswith(('javascript:void', '#', 'tel', 'mailto')):
-                full_link = urllib.parse.urljoin(board_url, link)
-                if not any(n['title'] == title for n in notices):
-                    notices.append({"title": title, "url": full_link})
-                    
+        # 📌 사용자님 원본 코드 로직 복구: "table tbody tr" 탐색
+        rows = soup.select('table tbody tr')
+        
+        for row in rows:
+            a_tag = row.find('a')
+            if a_tag:
+                title = a_tag.get_text(strip=True)
+                link = a_tag.get('href', '')
+                
+                # 자바스크립트 더미 링크나 너무 짧은 제목 제외
+                if len(title) > 3 and link and not link.startswith(('javascript:void', '#', 'tel', 'mailto')):
+                    full_link = urllib.parse.urljoin(board_url, link)
+                    if not any(n['title'] == title for n in notices):
+                        notices.append({"title": title, "url": full_link})
+                        
         return {"status": "success", "data": notices[:30]}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+    finally:
+        if driver:
+            driver.quit()
 
 @st.cache_data(show_spinner=False)
 def capture_and_translate(url, target_lang, _api_key):
