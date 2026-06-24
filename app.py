@@ -47,7 +47,7 @@ with st.sidebar:
     target_lang = st.selectbox("번역할 언어를 선택하세요", ["English", "Tiếng Việt (베트남어)", "中文 (중국어)", "日本語 (일본어)", "Русский (러시아어)"])
 
 # ==========================================
-# 2. 크롤링 및 AI 기능
+# 2. 크롤링 및 AI 기능 (✨모델 자동 검색 도입)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_notice_list(board_url):
@@ -112,9 +112,32 @@ def capture_and_translate(board_url, target_title, target_lang, _api_key):
         screenshot_bytes = content_area.screenshot_as_png
         image = Image.open(io.BytesIO(screenshot_bytes))
         
-        # 💡 [버그 수정 완료] 오직 최신 공식 모델(gemini-1.5-flash)만 깔끔하게 호출합니다.
+        # 💡 [진짜 최종 해결책] "쓸 수 있는 모델이 뭔지 구글 서버에 직접 물어보고 고르기"
         genai.configure(api_key=_api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        valid_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                valid_models.append(m.name)
+                
+        # 선호하는 모델 순서대로 매칭
+        best_model_name = None
+        preferences = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-pro-vision', 'models/gemini-1.0-pro-vision-latest']
+        
+        for pref in preferences:
+            if pref in valid_models:
+                best_model_name = pref
+                break
+                
+        # 선호 모델이 없으면 리스트에 있는 첫 번째 사용 가능 모델을 강제 지정
+        if not best_model_name and valid_models:
+            best_model_name = valid_models[0] 
+            
+        if not best_model_name:
+            return {"status": "error", "message": "사용 가능한 AI 모델이 전혀 없습니다. API 키 상태를 확인해주세요."}
+
+        # 찾은 모델로 번역 실행
+        model = genai.GenerativeModel(best_model_name)
         
         prompt = f"""
 당신은 한국 학교의 가정통신문 전문 번역가입니다.
@@ -126,7 +149,7 @@ def capture_and_translate(board_url, target_title, target_lang, _api_key):
 2. 부연 설명 없이 '번역된 결과물'만 출력할 것.
 """
         response = model.generate_content([prompt, image])
-        return {"status": "success", "image": image, "translated_text": response.text}
+        return {"status": "success", "image": image, "translated_text": response.text, "used_model": best_model_name}
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -159,7 +182,7 @@ if result["status"] == "success" and result["data"]:
                 st.error("🚨 스크린샷 캡처 또는 번역 중 오류가 발생했습니다.")
                 st.error(capture_result["message"])
             else:
-                st.success("캡처 및 번역 완료!")
+                st.success(f"캡처 및 번역 완료! (사용된 AI: {capture_result.get('used_model', '알 수 없음')})")
                 
                 col1, col2 = st.columns(2)
                 with col1:
