@@ -47,7 +47,7 @@ with st.sidebar:
     target_lang = st.selectbox("번역할 언어를 선택하세요", ["English", "Tiếng Việt (베트남어)", "中文 (중국어)", "日本語 (일본어)", "Русский (러시아어)"])
 
 # ==========================================
-# 2. 크롤링 및 AI 기능 (이미지 정밀 캡처 + 모델 자동 선택)
+# 2. 크롤링 및 AI 기능
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_notice_list(board_url):
@@ -112,7 +112,9 @@ def capture_and_translate(board_url, target_title, target_lang, _api_key):
         screenshot_bytes = content_area.screenshot_as_png
         image = Image.open(io.BytesIO(screenshot_bytes))
         
+        # 💡 [버그 수정 완료] 오직 최신 공식 모델(gemini-1.5-flash)만 깔끔하게 호출합니다.
         genai.configure(api_key=_api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
 당신은 한국 학교의 가정통신문 전문 번역가입니다.
@@ -123,23 +125,7 @@ def capture_and_translate(board_url, target_title, target_lang, _api_key):
 1. 원본의 구조(표, 제목, 단락 등)를 마크다운 형식으로 최대한 동일하게 유지할 것.
 2. 부연 설명 없이 '번역된 결과물'만 출력할 것.
 """
-        # 💡 [버그 수정] 서버 라이브러리 버전에 맞춰 작동 가능한 AI 모델을 자동으로 찾습니다.
-        model_names = ['gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-1.5-pro-latest', 'gemini-pro-vision']
-        response = None
-        last_error = ""
-        
-        for model_name in model_names:
-            try:
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content([prompt, image])
-                break # 호환되는 모델을 찾아서 번역에 성공하면 반복문 탈출!
-            except Exception as e:
-                last_error = str(e)
-                continue
-                
-        if not response:
-            return {"status": "error", "message": f"Gemini 모델을 불러오지 못했습니다. (마지막 에러: {last_error})"}
-            
+        response = model.generate_content([prompt, image])
         return {"status": "success", "image": image, "translated_text": response.text}
 
     except Exception as e:
