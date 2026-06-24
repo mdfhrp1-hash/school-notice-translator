@@ -1,19 +1,16 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
-from bs4 import BeautifulSoup
-import urllib.parse
 import io
 import time
 
-# --- Selenium 관련 라이브러리 ---
+# --- 사용자님의 오리지널 로직: Selenium 관련 라이브러리 ---
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-# 🚨 크롬 드라이버 자동 다운로드 라이브러리(webdriver_manager) 삭제 완료
 
 # ==========================================
 # 🚨 핵심: Streamlit Cloud용 가상 크롬 브라우저 
@@ -21,14 +18,14 @@ from selenium.webdriver.support import expected_conditions as EC
 @st.cache_resource(show_spinner=False)
 def get_driver():
     options = Options()
-    options.add_argument('--headless') 
+    options.add_argument('--headless=new') 
     options.add_argument('--no-sandbox') 
     options.add_argument('--disable-dev-shm-usage') 
     options.add_argument('--window-size=1920,2000') 
     options.add_argument('--ignore-certificate-errors') 
     options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
     
-    # 📌 변경점: 인터넷에서 다운받지 말고, 리눅스 서버에 설치된 기본 드라이버를 직접 지정합니다.
+    # 리눅스 서버에 내장된 안전한 드라이버 사용 (버전 충돌 방지)
     service = Service('/usr/bin/chromedriver')
     driver = webdriver.Chrome(service=service, options=options)
     return driver
@@ -39,7 +36,7 @@ def get_driver():
 st.set_page_config(page_title="등원초 다문화 가정 알리미", page_icon="🏫", layout="wide")
 
 st.title("🏫 등원초등학교 가정통신문 다국어 번역기")
-st.markdown("가정통신문을 정확히 읽어오고 캡처합니다.")
+st.markdown("사용자님의 오리지널 로직을 복구하여, 자바스크립트 보안을 뚫고 클릭하여 진입합니다.")
 
 with st.sidebar:
     st.header("⚙️ 환경 설정")
@@ -53,40 +50,32 @@ with st.sidebar:
     target_lang = st.selectbox("번역할 언어를 선택하세요", ["English", "Tiếng Việt (베트남어)", "中文 (중국어)", "日本語 (일본어)", "Русский (러시아어)"])
 
 # ==========================================
-# 2. 크롤링 및 AI 기능 (Selenium 100% 활용)
+# 2. 크롤링 및 AI 기능 (원본 Click 방식 완벽 이식)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_notice_list(board_url):
-    """사용자님 오리지널 방식: 엉뚱한 iframe 전환을 삭제하고 정직하게 표(Table)를 찾습니다."""
+    """사용자님 원본 방식: URL을 파싱하지 않고, 보이는 '제목' 자체를 수집합니다."""
     driver = None
     try:
         driver = get_driver()
         driver.get(board_url)
+        time.sleep(4) # 자바스크립트 렌더링 대기
         
-        # 📌 명시적 대기: 무작정 3초 기다리지 않고, 화면에 'table'이 나타날 때까지 최대 10초 대기
-        wait = WebDriverWait(driver, 10)
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
-        time.sleep(1) # 표가 로딩된 후 안의 글씨가 채워질 때까지 1초만 더 여유 대기
-        
-        # 눈에 보이는 완성된 페이지 소스를 가져와서 분석
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        # 사용자님 코드: table tbody tr 그대로 사용
+        posts = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
         notices = []
         
-        # 📌 사용자님 원본 코드 로직 복구: "table tbody tr" 탐색
-        rows = soup.select('table tbody tr')
-        
-        for row in rows:
-            a_tag = row.find('a')
-            if a_tag:
-                title = a_tag.get_text(strip=True)
-                link = a_tag.get('href', '')
-                
-                # 자바스크립트 더미 링크나 너무 짧은 제목 제외
-                if len(title) > 3 and link and not link.startswith(('javascript:void', '#', 'tel', 'mailto')):
-                    full_link = urllib.parse.urljoin(board_url, link)
+        for post in posts:
+            try:
+                a_tag = post.find_element(By.TAG_NAME, "a")
+                title = a_tag.text.strip()
+                # 빈 칸이나 너무 짧은 더미 텍스트 제외
+                if len(title) > 3:
                     if not any(n['title'] == title for n in notices):
-                        notices.append({"title": title, "url": full_link})
-                        
+                        notices.append({"title": title})
+            except:
+                continue
+                
         return {"status": "success", "data": notices[:30]}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -95,18 +84,42 @@ def fetch_notice_list(board_url):
             driver.quit()
 
 @st.cache_data(show_spinner=False)
-def capture_and_translate(url, target_lang, _api_key):
-    """게시글에 진입하여 HWP 뷰어/본문을 스크린샷 찍고 Gemini Vision으로 번역"""
+def capture_and_translate(board_url, target_title, target_lang, _api_key):
+    """목록에 다시 들어가 해당 제목을 물리적으로 Click 한 뒤 캡처합니다."""
     driver = None
     try:
         driver = get_driver()
-        driver.get(url)
-        time.sleep(3) 
+        driver.get(board_url)
+        time.sleep(4) 
         
-        wait = WebDriverWait(driver, 10)
-        content_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".board-text, .bbsc, .view_content, #board_area, .content")))
+        posts = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+        target_link = None
         
-        screenshot_bytes = content_element.screenshot_as_png
+        # 우리가 찾고자 하는 제목의 a 태그 찾기
+        for post in posts:
+            try:
+                a_tag = post.find_element(By.TAG_NAME, "a")
+                if target_title == a_tag.text.strip():
+                    target_link = a_tag
+                    break
+            except:
+                continue
+                
+        if not target_link:
+            return {"status": "error", "message": "목록에서 해당 글을 찾을 수 없습니다."}
+
+        # 💡 사용자님 원본 핵심 기술: 강제 스크립트 클릭! (javascript 링크 무력화)
+        driver.execute_script("arguments[0].click();", target_link)
+        time.sleep(4) # 상세 페이지 로딩 대기
+        
+        # 💡 사용자님 원본 코드에 있던 클래스명 그대로 사용
+        content_area = driver.find_element(By.CSS_SELECTOR, ".content, .board_view, .view_con")
+        
+        # 화면에 보이도록 스크롤 후 캡처 (짤림 방지)
+        driver.execute_script("arguments[0].scrollIntoView();", content_area)
+        time.sleep(1)
+        
+        screenshot_bytes = content_area.screenshot_as_png
         image = Image.open(io.BytesIO(screenshot_bytes))
         
         genai.configure(api_key=_api_key)
@@ -126,6 +139,9 @@ def capture_and_translate(url, target_lang, _api_key):
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+    finally:
+        if driver:
+            driver.quit()
 
 # ==========================================
 # 3. 메인 UI
@@ -133,20 +149,22 @@ def capture_and_translate(url, target_lang, _api_key):
 st.markdown("### 🌐 등원초등학교 최신 가정통신문")
 board_url = "https://deungwon.sen.es.kr/192617/subMenu.do"
 
-with st.spinner("가상 브라우저로 학교 게시판을 여는 중입니다... (최초 로딩 시 약간의 시간이 소요됩니다)"):
+with st.spinner("가상 브라우저로 학교 게시판을 여는 중입니다..."):
     result = fetch_notice_list(board_url)
 
 if result["status"] == "success" and result["data"]:
     notices = result["data"]
     notice_titles = [f"{idx+1}. {notice['title']}" for idx, notice in enumerate(notices)]
     
-    selected_title = st.selectbox("번역할 가정통신문을 선택하세요:", notice_titles)
-    selected_index = notice_titles.index(selected_title)
-    target_url = notices[selected_index]['url']
+    selected_title_display = st.selectbox("번역할 가정통신문을 선택하세요:", notice_titles)
+    selected_index = notice_titles.index(selected_title_display)
+    
+    # 📌 번역할 실제 제목
+    target_title = notices[selected_index]['title']
     
     if st.button("가상 브라우저로 캡처 및 번역 시작", key="btn_capture"):
-        with st.spinner("해당 글에 진입하여 사진을 찍고 번역하는 중입니다... (약 10~15초 소요)"):
-            capture_result = capture_and_translate(target_url, target_lang, api_key)
+        with st.spinner(f"[{target_title}]에 진입하여 사진을 찍고 번역하는 중입니다... (약 15초 소요)"):
+            capture_result = capture_and_translate(board_url, target_title, target_lang, api_key)
             
             if capture_result["status"] == "error":
                 st.error("🚨 스크린샷 캡처 또는 번역 중 오류가 발생했습니다.")
@@ -163,7 +181,7 @@ if result["status"] == "success" and result["data"]:
                     st.success(capture_result["translated_text"])
                     
 elif result["status"] == "success" and not result["data"]:
-    st.warning("접속은 성공했으나, 빈 껍데기만 가져왔습니다. 학교 사이트 구조가 매우 특이합니다.")
+    st.warning("접속은 성공했으나, 게시글 목록을 불러오지 못했습니다.")
 else:
     st.error("🚨 학교 사이트 접속에 실패했습니다.")
     st.error(f"상세 에러 내용: {result['message']}")
