@@ -12,14 +12,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # ==========================================
-# 🚨 버그 수정: 캐싱 삭제 (매번 건강한 새 브라우저를 띄웁니다)
+# 🚨 가상 크롬 브라우저 세팅
 # ==========================================
 def get_driver():
     options = Options()
     options.add_argument('--headless=new') 
     options.add_argument('--no-sandbox') 
     options.add_argument('--disable-dev-shm-usage') 
-    options.add_argument('--window-size=1920,3000') # 이미지 전체가 담기도록 창을 길게 설정
+    options.add_argument('--window-size=1920,3000') 
     options.add_argument('--ignore-certificate-errors') 
     options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
     
@@ -47,7 +47,7 @@ with st.sidebar:
     target_lang = st.selectbox("번역할 언어를 선택하세요", ["English", "Tiếng Việt (베트남어)", "中文 (중국어)", "日本語 (일본어)", "Русский (러시아어)"])
 
 # ==========================================
-# 2. 크롤링 및 AI 기능 (이미지 정밀 캡처 적용)
+# 2. 크롤링 및 AI 기능 (이미지 정밀 캡처 + 모델 자동 선택)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_notice_list(board_url):
@@ -75,13 +75,13 @@ def fetch_notice_list(board_url):
         return {"status": "error", "message": str(e)}
     finally:
         if driver:
-            driver.quit() # 작업 완료 후 정상 종료
+            driver.quit() 
 
 @st.cache_data(show_spinner=False)
 def capture_and_translate(board_url, target_title, target_lang, _api_key):
     driver = None
     try:
-        driver = get_driver() # 죽은 브라우저를 쓰지 않고 여기서 무조건 새 브라우저를 켭니다!
+        driver = get_driver() 
         driver.get(board_url)
         time.sleep(4) 
         
@@ -100,24 +100,19 @@ def capture_and_translate(board_url, target_title, target_lang, _api_key):
         if not target_link:
             return {"status": "error", "message": "목록에서 해당 글을 찾을 수 없습니다."}
 
-        # 자바스크립트 우회하여 클릭 진입
         driver.execute_script("arguments[0].click();", target_link)
-        time.sleep(4) # 상세 페이지 로딩 대기
+        time.sleep(4) 
         
-        # 💡 [중요 수정] HWP 변환 이미지가 완전히 뜰 때까지 충분히 대기합니다
         content_area = driver.find_element(By.CSS_SELECTOR, ".content, .board_view, .view_con, #board_area")
-        time.sleep(3) # 이미지가 로딩될 시간을 3초 더 줍니다
+        time.sleep(3) 
         
-        # 이미지가 화면 중앙에 오도록 스크롤
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", content_area)
         time.sleep(1)
         
-        # 요소 스크린샷 캡처
         screenshot_bytes = content_area.screenshot_as_png
         image = Image.open(io.BytesIO(screenshot_bytes))
         
         genai.configure(api_key=_api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
 당신은 한국 학교의 가정통신문 전문 번역가입니다.
@@ -128,14 +123,30 @@ def capture_and_translate(board_url, target_title, target_lang, _api_key):
 1. 원본의 구조(표, 제목, 단락 등)를 마크다운 형식으로 최대한 동일하게 유지할 것.
 2. 부연 설명 없이 '번역된 결과물'만 출력할 것.
 """
-        response = model.generate_content([prompt, image])
+        # 💡 [버그 수정] 서버 라이브러리 버전에 맞춰 작동 가능한 AI 모델을 자동으로 찾습니다.
+        model_names = ['gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-1.5-pro-latest', 'gemini-pro-vision']
+        response = None
+        last_error = ""
+        
+        for model_name in model_names:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content([prompt, image])
+                break # 호환되는 모델을 찾아서 번역에 성공하면 반복문 탈출!
+            except Exception as e:
+                last_error = str(e)
+                continue
+                
+        if not response:
+            return {"status": "error", "message": f"Gemini 모델을 불러오지 못했습니다. (마지막 에러: {last_error})"}
+            
         return {"status": "success", "image": image, "translated_text": response.text}
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
     finally:
         if driver:
-            driver.quit() # 번역이 끝나면 안전하게 브라우저 닫기
+            driver.quit()
 
 # ==========================================
 # 3. 메인 UI
